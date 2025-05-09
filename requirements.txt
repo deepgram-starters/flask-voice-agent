@@ -2,5 +2,5 @@ flask==3.0.2
 deepgram-sdk==4.0.0
 python-dotenv==1.0.1
 PyAudio==0.2.14
-flask-cors==4.0.0
+flask-cors==4.0.2
 flask-socketio==5.3.6
