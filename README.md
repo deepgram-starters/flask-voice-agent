@@ -71,11 +71,25 @@ Test the application with:
 pytest -v test_app.py
 ```
 
-## Issue Reporting
+## Getting Help
+
+We love to hear from you so if you have questions, comments or find a bug in the project, let us know! You can either:
 
 - [Open an issue in this repository](https://github.com/deepgram-starters/flask-voice-agent/issues/new)
 - [Join the Deepgram Github Discussions Community](https://github.com/orgs/deepgram/discussions)
 - [Join the Deepgram Discord Community](https://discord.gg/xWRaCDBtW4)
+
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guidelines](./CONTRIBUTING.md) for details.
+
+## Security
+
+For security concerns, please see our [Security Policy](./SECURITY.md).
+
+## Code of Conduct
+
+Please see our [Code of Conduct](./CODE_OF_CONDUCT.md) for community guidelines.
 
 ## Author
 
