@@ -35,7 +35,7 @@ pip install -r requirements.txt
 export DEEPGRAM_API_KEY=your_api_key_here
 ```
 
-## Running the Application
+### Running the Application
 
 Start the Flask server:
 ```bash
