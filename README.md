@@ -52,6 +52,17 @@ http://localhost:3000
 - Speak into your microphone to interact with the Deepgram Voice Agent.
 - You should hear the agent's responses played back in your browser.
 
+## Using Cursor & MDC Rules
+
+This application can be modify as needed by using the [app-requirements.mdc](.cursor/rules/app-requirements.mdc) file. This file allows you to specify various settings and parameters for the application in a structured format that can be use along with [Cursor's](https://www.cursor.com/) AI Powered Code Editor.
+
+### Using the `app-requirements.mdc` File
+
+1. Clone or Fork this repo.
+2. Modify the `app-requirements.mdc`
+3. Add the necessary configuration settings in the file.
+4. You can refer to the MDC file used to help build this starter application by reviewing  [app-requirements.mdc](.cursor/rules/app-requirements.mdc)
+
 ## Testing
 
 Test the application with:
