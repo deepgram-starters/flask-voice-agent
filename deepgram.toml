@@ -2,7 +2,7 @@
 title = "Flask Agent Starter"
 description = "Get started using Deepgram's Voice Agent with this Flask demo app"
 author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
-useCase = "Agent"
+useCase = "Voice Agent"
 language = "Python"
 framework = "Flask"
 sdk = "4.0.0"
