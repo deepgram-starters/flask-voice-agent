@@ -6,6 +6,7 @@ useCase = "Voice Agent"
 language = "Python"
 framework = "Flask"
 sdk = "4.0.0"
+repository = "https://github.com/deepgram-starters/flask-voice-agent"
 
 [build]
 command = "pip install -r requirements.txt"
