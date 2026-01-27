@@ -50,7 +50,12 @@ if not CONFIG['deepgram_api_key']:
 # ============================================================================
 
 # Initialize Flask app
-app = Flask(__name__, static_folder="./frontend/dist", static_url_path="/")
+# In development, don't serve static files (we proxy to Vite)
+# In production, serve from frontend/dist
+if CONFIG['is_development']:
+    app = Flask(__name__)
+else:
+    app = Flask(__name__, static_folder="./frontend/dist", static_url_path="/")
 
 # Enable CORS for development
 CORS(app, resources={
@@ -116,20 +121,33 @@ if CONFIG['is_development']:
 
     import requests
 
-    @app.route('/')
-    @app.route('/<path:path>')
-    def proxy_to_vite(path=''):
-        """Proxy all non-API/WebSocket requests to Vite dev server"""
-        # Don't proxy API or WebSocket routes - they're handled elsewhere
-        if path.startswith('metadata') or path.startswith('agent'):
-            # Return 404 - these paths should be handled by other routes
-            return '', 404
+    from flask import Response
 
-        # Proxy to Vite
+    # Catch-all route to proxy to Vite
+    @app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'])
+    @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'])
+    def proxy_to_vite(path):
+        """Proxy all requests to Vite dev server"""
         vite_url = f"http://localhost:{CONFIG['vite_port']}/{path}"
+        if request.query_string:
+            vite_url += f"?{request.query_string.decode()}"
+
         try:
-            resp = requests.get(vite_url, stream=True, headers=dict(request.headers))
-            return resp.content, resp.status_code, dict(resp.headers)
+            resp = requests.request(
+                method=request.method,
+                url=vite_url,
+                headers={k: v for k, v in request.headers if k.lower() not in ['host', 'connection']},
+                data=request.get_data(),
+                cookies=request.cookies,
+                allow_redirects=False,
+                stream=True
+            )
+
+            # Forward response from Vite
+            excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+            headers = [(k, v) for k, v in resp.raw.headers.items() if k.lower() not in excluded_headers]
+
+            return Response(resp.content, resp.status_code, headers)
         except requests.exceptions.RequestException as e:
             print(f"Error proxying to Vite: {e}")
             return f"Error: Cannot connect to Vite dev server on port {CONFIG['vite_port']}", 502
