@@ -13,9 +13,9 @@ Before you start, it's essential to generate a Deepgram API key to use in this p
 ## Prerequisites
 
 - Python 3.8 or higher
+- Node.js 14.0.0+ and pnpm 10.0.0+ (for frontend)
 - Deepgram API key
 - Modern web browser with microphone support
-- [Port Audio](https://www.portaudio.com/) installed locally
 
 ## Quickstart
 
@@ -23,34 +23,78 @@ Follow these steps to get started with this starter application.
 
 ### Clone the repository
 
-1. Go to GitHub and [clone the repository](https://github.com/deepgram-starters/flask-voice-agent).
+Clone the repository with submodules (the frontend is a shared submodule):
 
-2. Install dependencies:
 ```bash
-pip install -r requirements.txt
+git clone --recurse-submodules https://github.com/deepgram-starters/flask-voice-agent.git
+cd flask-voice-agent
 ```
 
-3. Set your Deepgram API key:
+### Initialize the project
+
+Using the Makefile (recommended - handles venv and submodule setup):
+
 ```bash
-export DEEPGRAM_API_KEY=your_api_key_here
+make init
 ```
 
-### Running the Application
+The `make init` command will:
+- Initialize the frontend submodule
+- Create a Python virtual environment
+- Install backend dependencies
+- Install frontend dependencies
 
-Start the Flask server:
+### Configure your API key
+
+Copy the sample environment file and add your Deepgram API key:
+
 ```bash
-python app.py
+cp sample.env .env
+# Edit .env and add your DEEPGRAM_API_KEY
 ```
 
-Then open your browser and go to:
+### Start development servers
 
-```
-http://localhost:3000
+```bash
+make dev
 ```
 
-- Allow microphone access when prompted.
-- Speak into your microphone to interact with the Deepgram Voice Agent.
-- You should hear the agent's responses played back in your browser.
+This starts both:
+- Flask backend on `http://localhost:8080` (serves API and proxies to Vite)
+- Vite dev server on `http://localhost:5173` (internal, provides HMR)
+
+**Important:** Always access the app at `http://localhost:8080` (not 5173).
+
+The backend proxies all requests to Vite for hot module reloading, while Vite proxies API routes back to the backend.
+
+### Using the application
+
+1. Open your browser to `http://localhost:8080`
+2. Allow microphone access when prompted
+3. Speak into your microphone to interact with the Deepgram Voice Agent
+4. You should hear the agent's responses played back in your browser
+
+## Available Make Commands
+
+- `make help` - Show all available commands
+- `make init` - Initialize submodules and install dependencies
+- `make dev` - Start development servers
+- `make build` - Build frontend for production
+- `make start` - Start production server
+- `make clean` - Remove dependencies and build artifacts
+- `make update` - Update submodules to latest commits
+- `make status` - Show git and submodule status
+
+## Production Deployment
+
+To build for production:
+
+```bash
+make build
+make start
+```
+
+In production mode, the Flask backend serves the pre-built static frontend from `frontend/dist/`.
 
 ## Using Cursor & MDC Rules
 

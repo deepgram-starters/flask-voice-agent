@@ -1,6 +1,8 @@
-deepgram-sdk==5.3.0
 flask==3.1.0
 flask-sock==0.7.0
 flask-cors==5.0.0
 python-dotenv==1.0.1
 werkzeug==3.1.4
+websocket-client==1.8.0
+toml==0.10.2
+requests==2.32.3

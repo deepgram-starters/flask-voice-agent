@@ -1,24 +1,18 @@
 """
 Flask Voice Agent Starter - Backend Server
 
-This Flask server provides a WebSocket endpoint for voice agent conversations
-powered by Deepgram's Voice Agent service. It proxies to the Deepgram Agent API
-and forwards all events between the frontend and Deepgram.
-
-Key Features:
-- WebSocket endpoint: /agent/converse
-- Bidirectional audio and message streaming
-- Forwards all agent events (Welcome, ConversationText, Audio, etc.)
-- Serves built frontend from frontend/dist/
+Simple WebSocket proxy to Deepgram's Voice Agent API.
+Forwards all messages (JSON and binary) bidirectionally between client and Deepgram.
 """
 
 import os
 import json
 import threading
-from flask import Flask
+from flask import Flask, jsonify, send_from_directory, request
 from flask_sock import Sock
 from flask_cors import CORS
-from deepgram import DeepgramClient
+import websocket
+import toml
 from dotenv import load_dotenv
 
 # Load .env file (won't override existing environment variables)
@@ -28,42 +22,37 @@ load_dotenv(override=False)
 # CONFIGURATION
 # ============================================================================
 
-DEFAULT_PORT = 8080
+CONFIG = {
+    'deepgram_api_key': os.environ.get('DEEPGRAM_API_KEY'),
+    'deepgram_agent_url': 'wss://agent.deepgram.com/v1/agent/converse',
+    'port': int(os.environ.get('PORT', 8080)),
+    'host': os.environ.get('HOST', '0.0.0.0'),
+    'vite_port': int(os.environ.get('VITE_PORT', 5173)),
+    'is_development': os.environ.get('FLASK_ENV') == 'development',
+}
 
-# ============================================================================
-# API KEY VALIDATION
-# ============================================================================
-
-def validate_api_key():
-    """Validates that the Deepgram API key is configured"""
-    api_key = os.environ.get("DEEPGRAM_API_KEY")
-
-    if not api_key:
-        print("\n" + "="*70)
-        print("ERROR: Deepgram API key not found!")
-        print("="*70)
-        print("\nPlease set your API key using one of these methods:")
-        print("\n1. Create a .env file (recommended):")
-        print("   DEEPGRAM_API_KEY=your_api_key_here")
-        print("\n2. Environment variable:")
-        print("   export DEEPGRAM_API_KEY=your_api_key_here")
-        print("\nGet your API key at: https://console.deepgram.com")
-        print("="*70 + "\n")
-        raise ValueError("DEEPGRAM_API_KEY environment variable is required")
-
-    return api_key
-
-# Validate on startup
-API_KEY = validate_api_key()
+# Validate required environment variables
+if not CONFIG['deepgram_api_key']:
+    print("\n" + "="*70)
+    print("ERROR: Deepgram API key not found!")
+    print("="*70)
+    print("\nPlease set your API key using one of these methods:")
+    print("\n1. Create a .env file (recommended):")
+    print("   DEEPGRAM_API_KEY=your_api_key_here")
+    print("\n2. Environment variable:")
+    print("   export DEEPGRAM_API_KEY=your_api_key_here")
+    print("\nGet your API key at: https://console.deepgram.com")
+    print("="*70 + "\n")
+    exit(1)
 
 # ============================================================================
 # SETUP - Initialize Flask, WebSocket, and CORS
 # ============================================================================
 
-# Initialize Flask app - serve built frontend from frontend/dist/
+# Initialize Flask app
 app = Flask(__name__, static_folder="./frontend/dist", static_url_path="/")
 
-# Enable CORS for development (allows Vite dev server to connect)
+# Enable CORS for development
 CORS(app, resources={
     r"/*": {
         "origins": "*",  # In production, restrict to your domain
@@ -76,345 +65,220 @@ CORS(app, resources={
 sock = Sock(app)
 
 # ============================================================================
-# HTTP ROUTES
+# API ROUTES
 # ============================================================================
 
-@app.route("/")
-def index():
-    """Serve the main frontend HTML file"""
-    return app.send_static_file("index.html")
+@app.route('/metadata')
+def metadata():
+    """Returns info from deepgram.toml"""
+    try:
+        with open('deepgram.toml', 'r') as f:
+            config = toml.load(f)
+
+        if 'meta' not in config:
+            return jsonify({
+                'error': 'INTERNAL_SERVER_ERROR',
+                'message': 'Missing [meta] section in deepgram.toml'
+            }), 500
+
+        return jsonify(config['meta'])
+    except Exception as error:
+        print(f'Error reading metadata: {error}')
+        return jsonify({
+            'error': 'INTERNAL_SERVER_ERROR',
+            'message': 'Failed to read metadata from deepgram.toml'
+        }), 500
 
 # ============================================================================
-# WEBSOCKET ENDPOINT - Voice Agent
+# FRONTEND SERVING (Development vs Production Pattern)
+# ============================================================================
+#
+# This pattern allows framework-agnostic frontend/backend integration:
+#
+# DEVELOPMENT MODE (FLASK_ENV=development):
+#   - Vite dev server runs independently on port 5173 (or VITE_PORT)
+#   - Backend proxies ALL requests to Vite for HMR and fast refresh
+#   - Vite proxies API routes (/agent, /metadata) back to backend
+#   - User accesses: http://localhost:8080
+#   - Flow: User → :8080 (Backend) → :5173 (Vite) → [API requests back to :8080]
+#
+# PRODUCTION MODE (FLASK_ENV=production or default):
+#   - Frontend is pre-built (make build) to frontend/dist
+#   - Backend serves static files directly from frontend/dist
+#   - Backend handles API routes directly
+#   - User accesses: http://localhost:8080
+#   - Flow: User → :8080 (Backend serves static + APIs)
+#
+# ============================================================================
+
+if CONFIG['is_development']:
+    print(f"Development mode: Proxying to Vite dev server on port {CONFIG['vite_port']}")
+
+    import requests
+
+    @app.route('/')
+    @app.route('/<path:path>')
+    def proxy_to_vite(path=''):
+        """Proxy all non-API/WebSocket requests to Vite dev server"""
+        # Don't proxy API or WebSocket routes - they're handled elsewhere
+        if path.startswith('metadata') or path.startswith('agent'):
+            # Return 404 - these paths should be handled by other routes
+            return '', 404
+
+        # Proxy to Vite
+        vite_url = f"http://localhost:{CONFIG['vite_port']}/{path}"
+        try:
+            resp = requests.get(vite_url, stream=True, headers=dict(request.headers))
+            return resp.content, resp.status_code, dict(resp.headers)
+        except requests.exceptions.RequestException as e:
+            print(f"Error proxying to Vite: {e}")
+            return f"Error: Cannot connect to Vite dev server on port {CONFIG['vite_port']}", 502
+else:
+    print('Production mode: Serving static files from frontend/dist')
+
+    @app.route('/')
+    @app.route('/<path:path>')
+    def serve_static(path=''):
+        """Serve static files from frontend/dist"""
+        if path and os.path.exists(os.path.join(app.static_folder, path)):
+            return send_from_directory(app.static_folder, path)
+        return send_from_directory(app.static_folder, 'index.html')
+
+# ============================================================================
+# WEBSOCKET ENDPOINT - Voice Agent (Simple Pass-Through Proxy)
 # ============================================================================
 
 @sock.route('/agent/converse')
 def voice_agent(ws):
     """
     WebSocket endpoint for voice agent conversations
-
-    The client sends:
-    - Binary data: audio frames
-    - JSON messages: Settings, InjectUserMessage, and other control messages
-
-    The server sends:
-    - Binary data: audio frames from the agent
-    - JSON messages: Welcome, SettingsApplied, ConversationText, AgentThinking,
-                    UserStartedSpeaking, AgentAudioDone, Error, Warning, etc.
+    Simple pass-through proxy - forwards all messages bidirectionally
     """
-    print("Client connected to /agent/converse")
+    print('Client connected to /agent/converse')
 
     # Thread control
     stop_event = threading.Event()
-    deepgram_agent = None
-    deepgram_context = None
+    deepgram_ws = None
+
+    def forward_from_deepgram():
+        """Thread to forward messages from Deepgram to client"""
+        try:
+            while not stop_event.is_set() and deepgram_ws:
+                try:
+                    # Receive from Deepgram (with timeout to check stop_event)
+                    deepgram_ws.settimeout(1.0)
+                    message = deepgram_ws.recv()
+
+                    if message:
+                        # Forward to client (preserves binary/text)
+                        ws.send(message)
+                except websocket.WebSocketTimeoutException:
+                    # Timeout is normal - just check stop_event and continue
+                    continue
+                except Exception as e:
+                    if not stop_event.is_set():
+                        print(f'Error receiving from Deepgram: {e}')
+                    break
+        finally:
+            stop_event.set()
 
     try:
         # Validate API key
-        if not API_KEY:
-            error_msg = {
+        if not CONFIG['deepgram_api_key']:
+            ws.send(json.dumps({
                 'type': 'Error',
-                'description': 'Missing Deepgram API key',
+                'description': 'Missing API key',
                 'code': 'MISSING_API_KEY'
-            }
-            ws.send(json.dumps(error_msg))
+            }))
             return
 
-        # Initialize Deepgram client
-        client = DeepgramClient(api_key=API_KEY)
+        # Create raw WebSocket connection to Deepgram Agent API
+        print('Initiating Deepgram connection...')
+        deepgram_ws = websocket.create_connection(
+            CONFIG['deepgram_agent_url'],
+            header=[f"Authorization: Token {CONFIG['deepgram_api_key']}"],
+            timeout=10
+        )
+        print('✓ Connected to Deepgram Agent API')
 
-        # Create agent connection
-        deepgram_context = client.agent.websocket.v("1")
-        deepgram_agent = deepgram_context
+        # Start thread to forward Deepgram → Client
+        forward_thread = threading.Thread(target=forward_from_deepgram, daemon=True)
+        forward_thread.start()
 
-        # Set up Deepgram event handlers
-        def on_open(self, open_event, **kwargs):
-            """Handle Deepgram connection open"""
-            print("Deepgram agent connection opened")
-
-        def on_welcome(self, welcome, **kwargs):
-            """Forward Welcome message to client"""
-            if welcome:
-                ws.send(json.dumps(welcome.__dict__))
-
-        def on_settings_applied(self, settings_applied, **kwargs):
-            """Forward SettingsApplied message to client"""
-            if settings_applied:
-                ws.send(json.dumps(settings_applied.__dict__))
-
-        def on_conversation_text(self, conversation_text, **kwargs):
-            """Forward ConversationText events to client"""
-            if conversation_text:
-                ws.send(json.dumps(conversation_text.__dict__))
-
-        def on_user_started_speaking(self, user_started_speaking, **kwargs):
-            """Forward UserStartedSpeaking events to client"""
-            if user_started_speaking:
-                ws.send(json.dumps(user_started_speaking.__dict__))
-
-        def on_agent_thinking(self, agent_thinking, **kwargs):
-            """Forward AgentThinking events to client"""
-            if agent_thinking:
-                ws.send(json.dumps(agent_thinking.__dict__))
-
-        def on_agent_audio_done(self, agent_audio_done, **kwargs):
-            """Forward AgentAudioDone events to client"""
-            if agent_audio_done:
-                ws.send(json.dumps(agent_audio_done.__dict__))
-
-        def on_audio(self, audio_data, **kwargs):
-            """Forward audio chunks to client"""
-            if audio_data:
-                # Send as binary data
-                ws.send(audio_data)
-
-        def on_error(self, error, **kwargs):
-            """Forward Error events to client"""
-            print(f"Deepgram agent error: {error}")
-
-            # Map Deepgram errors to error codes
-            error_code = 'PROVIDER_ERROR'
-            error_msg = str(error) if error else 'Unknown error occurred'
-
-            if error_msg and 'auth' in error_msg.lower():
-                error_code = 'MISSING_API_KEY'
-            elif error_msg and 'audio' in error_msg.lower():
-                error_code = 'AUDIO_FORMAT_ERROR'
-
-            error_response = {
-                'type': 'Error',
-                'description': error_msg,
-                'code': error_code
-            }
-            ws.send(json.dumps(error_response))
-
-        def on_warning(self, warning, **kwargs):
-            """Forward Warning events to client"""
-            if warning:
-                ws.send(json.dumps(warning.__dict__))
-
-        def on_injection_refused(self, injection_refused, **kwargs):
-            """Forward InjectionRefused events to client"""
-            if injection_refused:
-                ws.send(json.dumps(injection_refused.__dict__))
-
-        def on_close(self, close_event, **kwargs):
-            """Handle Deepgram connection close"""
-            print("Deepgram agent connection closed")
-            stop_event.set()
-
-        # Register event handlers (using the Python SDK's event system)
-        # Note: The exact event names may differ - adjust based on SDK version
-        try:
-            from deepgram import AgentWebSocketEvents
-            deepgram_agent.on(AgentWebSocketEvents.Open, on_open)
-            deepgram_agent.on(AgentWebSocketEvents.Welcome, on_welcome)
-            deepgram_agent.on(AgentWebSocketEvents.SettingsApplied, on_settings_applied)
-            deepgram_agent.on(AgentWebSocketEvents.ConversationText, on_conversation_text)
-            deepgram_agent.on(AgentWebSocketEvents.UserStartedSpeaking, on_user_started_speaking)
-            deepgram_agent.on(AgentWebSocketEvents.AgentThinking, on_agent_thinking)
-            deepgram_agent.on(AgentWebSocketEvents.AgentAudioDone, on_agent_audio_done)
-            deepgram_agent.on(AgentWebSocketEvents.Audio, on_audio)
-            deepgram_agent.on(AgentWebSocketEvents.Error, on_error)
-            deepgram_agent.on(AgentWebSocketEvents.Warning, on_warning)
-            deepgram_agent.on(AgentWebSocketEvents.InjectionRefused, on_injection_refused)
-            deepgram_agent.on(AgentWebSocketEvents.Close, on_close)
-        except ImportError:
-            # Fallback for older SDK versions
-            print("Warning: Could not import AgentWebSocketEvents. Using fallback event registration.")
-
-        # Start the Deepgram agent connection
-        # Note: start() signature may vary by SDK version
-        if not deepgram_agent.start():
-            print("Failed to start Deepgram agent connection")
-            error_response = {
-                'type': 'Error',
-                'description': 'Failed to initialize agent connection',
-                'code': 'CONNECTION_FAILED'
-            }
-            ws.send(json.dumps(error_response))
-            return
-
-        print("Deepgram agent connection started, waiting for messages...")
-
-        # Main loop: receive messages from client and forward to Deepgram
+        # Main loop: forward Client → Deepgram
         while not stop_event.is_set():
             try:
-                data = ws.receive(timeout=1)  # 1 second timeout to check stop_event
+                # Receive from client (with timeout to check stop_event)
+                data = ws.receive(timeout=1.0)
 
                 if data is None:
-                    # Connection closed or timeout
+                    # Timeout or connection closed
                     if stop_event.is_set():
                         break
                     continue
 
+                # Forward to Deepgram (preserves binary/text)
                 if isinstance(data, bytes):
-                    # Binary audio data - validate and forward to Deepgram
-                    if not data or len(data) == 0:
-                        error_response = {
-                            'type': 'Error',
-                            'description': 'Invalid audio data: empty buffer',
-                            'code': 'AUDIO_FORMAT_ERROR'
-                        }
-                        ws.send(json.dumps(error_response))
-                        continue
-
-                    # Forward audio to Deepgram
-                    deepgram_agent.send_audio(data)
-
-                elif isinstance(data, str):
-                    # JSON message - parse and handle
-                    try:
-                        message = json.loads(data)
-                        message_type = message.get('type')
-
-                        if message_type == 'Settings':
-                            # Validate Settings message
-                            if not message.get('audio') or not message.get('agent'):
-                                error_response = {
-                                    'type': 'Error',
-                                    'description': 'Invalid Settings message: missing required fields',
-                                    'code': 'INVALID_SETTINGS'
-                                }
-                                ws.send(json.dumps(error_response))
-                                continue
-
-                            # Validate audio configuration
-                            audio = message.get('audio', {})
-                            if not audio.get('input') or not audio.get('output'):
-                                error_response = {
-                                    'type': 'Error',
-                                    'description': 'Invalid Settings message: missing audio configuration',
-                                    'code': 'AUDIO_FORMAT_ERROR'
-                                }
-                                ws.send(json.dumps(error_response))
-                                continue
-
-                            # Validate audio encoding
-                            valid_encodings = ['linear16', 'linear32', 'mulaw']
-                            input_encoding = audio.get('input', {}).get('encoding')
-                            output_encoding = audio.get('output', {}).get('encoding')
-
-                            if (input_encoding not in valid_encodings or
-                                output_encoding not in valid_encodings):
-                                error_response = {
-                                    'type': 'Error',
-                                    'description': 'Invalid audio encoding format',
-                                    'code': 'AUDIO_FORMAT_ERROR'
-                                }
-                                ws.send(json.dumps(error_response))
-                                continue
-
-                            # Validate agent configuration
-                            agent = message.get('agent', {})
-                            if (not agent.get('listen') or
-                                not agent.get('think') or
-                                not agent.get('speak')):
-                                error_response = {
-                                    'type': 'Error',
-                                    'description': 'Invalid Settings message: missing agent configuration',
-                                    'code': 'INVALID_SETTINGS'
-                                }
-                                ws.send(json.dumps(error_response))
-                                continue
-
-                            # Convert to SettingsOptions and configure agent
-                            from deepgram import SettingsOptions, Input, Output
-                            options = SettingsOptions.from_json(json.dumps(message))
-
-                            # Note: The SDK method name may vary - adjust as needed
-                            if hasattr(deepgram_agent, 'configure'):
-                                deepgram_agent.configure(options)
-                            else:
-                                # Fallback: send as raw message
-                                deepgram_agent.send(json.dumps(message))
-
-                        elif message_type == 'InjectUserMessage':
-                            # Inject user message
-                            content = message.get('content', '')
-                            if hasattr(deepgram_agent, 'inject_user_message'):
-                                deepgram_agent.inject_user_message(content)
-                            else:
-                                # Fallback: send as raw message
-                                deepgram_agent.send(json.dumps(message))
-
-                        else:
-                            # Forward other JSON messages as-is
-                            deepgram_agent.send(json.dumps(message))
-
-                    except json.JSONDecodeError as e:
-                        print(f"Invalid JSON received: {e}")
-                        error_response = {
-                            'type': 'Error',
-                            'description': 'Invalid JSON format',
-                            'code': 'CONNECTION_FAILED'
-                        }
-                        ws.send(json.dumps(error_response))
-
-                    except Exception as e:
-                        print(f"Error processing message: {e}")
-                        error_response = {
-                            'type': 'Error',
-                            'description': str(e),
-                            'code': 'CONNECTION_FAILED'
-                        }
-                        ws.send(json.dumps(error_response))
+                    deepgram_ws.send_binary(data)
+                else:
+                    deepgram_ws.send(data)
 
             except Exception as e:
-                print(f"Error in receive loop: {e}")
                 if not stop_event.is_set():
-                    error_response = {
-                        'type': 'Error',
-                        'description': f'Error processing message: {str(e)}',
-                        'code': 'CONNECTION_FAILED'
-                    }
-                    try:
-                        ws.send(json.dumps(error_response))
-                    except:
-                        pass
+                    print(f'Error in client receive loop: {e}')
                 break
 
-    except Exception as e:
-        print(f"Error in WebSocket handler: {e}")
+    except websocket.WebSocketException as e:
+        print(f'Deepgram WebSocket error: {e}')
         try:
-            error_response = {
+            ws.send(json.dumps({
                 'type': 'Error',
-                'description': 'Failed to initialize agent connection',
-                'code': 'CONNECTION_FAILED'
-            }
-            ws.send(json.dumps(error_response))
+                'description': str(e),
+                'code': 'PROVIDER_ERROR'
+            }))
         except:
             pass
-
+    except Exception as e:
+        print(f'Error in WebSocket handler: {e}')
+        try:
+            ws.send(json.dumps({
+                'type': 'Error',
+                'description': 'Failed to establish proxy connection',
+                'code': 'CONNECTION_FAILED'
+            }))
+        except:
+            pass
     finally:
         # Cleanup
-        print("Cleaning up connection...")
+        print('Cleaning up connection...')
         stop_event.set()
 
         # Close Deepgram connection
-        if deepgram_agent:
+        if deepgram_ws:
             try:
-                deepgram_agent.finish()
+                deepgram_ws.close()
             except Exception as e:
-                print(f"Error finishing Deepgram connection: {e}")
+                print(f'Error closing Deepgram connection: {e}')
 
-        print("Connection cleanup complete")
+        print('Connection cleanup complete')
 
 # ============================================================================
 # SERVER START
 # ============================================================================
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", DEFAULT_PORT))
-    host = os.environ.get("HOST", "0.0.0.0")
-    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+if __name__ == '__main__':
+    port = CONFIG['port']
+    host = CONFIG['host']
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
 
-    print("\n" + "=" * 70)
-    print(f"🚀 Flask Voice Agent Server running at http://localhost:{port}")
-    print(f"📦 Serving built frontend from frontend/dist")
-    print(f"🔌 WebSocket endpoint: ws://localhost:{port}/agent/converse")
-    print(f"🐞 Debug mode: {'ON' if debug else 'OFF'}")
-    print("=" * 70 + "\n")
+    print('\n' + '=' * 70)
+    print(f"Flask Voice Agent Server running at http://localhost:{port}")
+    print(f"WebSocket endpoint: ws://localhost:{port}/agent/converse")
+    print(f"Metadata endpoint: http://localhost:{port}/metadata")
+    if CONFIG['is_development']:
+        print(f"Make sure Vite dev server is running on port {CONFIG['vite_port']}")
+        print(f"\n⚠️  Open your browser to http://localhost:{port}")
+    print('=' * 70 + '\n')
 
     # Run Flask app
     app.run(
