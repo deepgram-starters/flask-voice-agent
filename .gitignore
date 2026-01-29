@@ -8,6 +8,9 @@ venv.bak/
 Pipfile
 Pipfile.lock
 
+# Deepgram local workspace
+.deepgram/
+
 # python artifacts
 __pycache__
 *.egg-info

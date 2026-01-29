@@ -27,7 +27,7 @@ CONFIG = {
     'deepgram_agent_url': 'wss://agent.deepgram.com/v1/agent/converse',
     'port': int(os.environ.get('PORT', 8080)),
     'host': os.environ.get('HOST', '0.0.0.0'),
-    'vite_port': int(os.environ.get('VITE_PORT', 5173)),
+    'vite_port': int(os.environ.get('VITE_PORT', 8081)),
     'is_development': os.environ.get('FLASK_ENV') == 'development',
 }
 
@@ -73,9 +73,9 @@ sock = Sock(app)
 # API ROUTES
 # ============================================================================
 
-@app.route('/metadata')
+@app.route('/api/metadata')
 def metadata():
-    """Returns info from deepgram.toml"""
+    """Returns metadata about this starter application from deepgram.toml"""
     try:
         with open('deepgram.toml', 'r') as f:
             config = toml.load(f)
@@ -101,11 +101,11 @@ def metadata():
 # This pattern allows framework-agnostic frontend/backend integration:
 #
 # DEVELOPMENT MODE (FLASK_ENV=development):
-#   - Vite dev server runs independently on port 5173 (or VITE_PORT)
+#   - Vite dev server runs independently on port 8081 (or VITE_PORT)
 #   - Backend proxies ALL requests to Vite for HMR and fast refresh
-#   - Vite proxies API routes (/agent, /metadata) back to backend
+#   - Vite proxies API routes (/agent, /api/metadata) back to backend
 #   - User accesses: http://localhost:8080
-#   - Flow: User → :8080 (Backend) → :5173 (Vite) → [API requests back to :8080]
+#   - Flow: User → :8080 (Backend) → :8081 (Vite) → [API requests back to :8080]
 #
 # PRODUCTION MODE (FLASK_ENV=production or default):
 #   - Frontend is pre-built (make build) to frontend/dist
@@ -292,7 +292,7 @@ if __name__ == '__main__':
     print('\n' + '=' * 70)
     print(f"Flask Voice Agent Server running at http://localhost:{port}")
     print(f"WebSocket endpoint: ws://localhost:{port}/agent/converse")
-    print(f"Metadata endpoint: http://localhost:{port}/metadata")
+    print(f"Metadata endpoint: http://localhost:{port}/api/metadata")
     if CONFIG['is_development']:
         print(f"Make sure Vite dev server is running on port {CONFIG['vite_port']}")
         print(f"\n⚠️  Open your browser to http://localhost:{port}")
