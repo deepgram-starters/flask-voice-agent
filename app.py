@@ -25,10 +25,9 @@ load_dotenv(override=False)
 CONFIG = {
     'deepgram_api_key': os.environ.get('DEEPGRAM_API_KEY'),
     'deepgram_agent_url': 'wss://agent.deepgram.com/v1/agent/converse',
-    'port': int(os.environ.get('PORT', 8080)),
+    'port': int(os.environ.get('PORT', 8081)),
     'host': os.environ.get('HOST', '0.0.0.0'),
-    'vite_port': int(os.environ.get('VITE_PORT', 8081)),
-    'is_development': os.environ.get('FLASK_ENV') == 'development',
+    'frontend_port': int(os.environ.get('FRONTEND_PORT', 8080)),
 }
 
 # Validate required environment variables
@@ -49,22 +48,15 @@ if not CONFIG['deepgram_api_key']:
 # SETUP - Initialize Flask, WebSocket, and CORS
 # ============================================================================
 
-# Initialize Flask app
-# In development, don't serve static files (we proxy to Vite)
-# In production, serve from frontend/dist
-if CONFIG['is_development']:
-    app = Flask(__name__)
-else:
-    app = Flask(__name__, static_folder="./frontend/dist", static_url_path="/")
+# Initialize Flask app (API server only)
+app = Flask(__name__)
 
-# Enable CORS for development
-CORS(app, resources={
-    r"/*": {
-        "origins": "*",  # In production, restrict to your domain
-        "allow_headers": ["Content-Type"],
-        "supports_credentials": True
-    }
-})
+# Enable CORS for frontend communication
+# Frontend runs on port 8080, backend on port 8081
+CORS(app, origins=[
+    f"http://localhost:{CONFIG['frontend_port']}",
+    f"http://127.0.0.1:{CONFIG['frontend_port']}"
+], supports_credentials=True)
 
 # Initialize native WebSocket support
 sock = Sock(app)
@@ -94,73 +86,6 @@ def metadata():
             'message': 'Failed to read metadata from deepgram.toml'
         }), 500
 
-# ============================================================================
-# FRONTEND SERVING (Development vs Production Pattern)
-# ============================================================================
-#
-# This pattern allows framework-agnostic frontend/backend integration:
-#
-# DEVELOPMENT MODE (FLASK_ENV=development):
-#   - Vite dev server runs independently on port 8081 (or VITE_PORT)
-#   - Backend proxies ALL requests to Vite for HMR and fast refresh
-#   - Vite proxies API routes (/agent, /api/metadata) back to backend
-#   - User accesses: http://localhost:8080
-#   - Flow: User → :8080 (Backend) → :8081 (Vite) → [API requests back to :8080]
-#
-# PRODUCTION MODE (FLASK_ENV=production or default):
-#   - Frontend is pre-built (make build) to frontend/dist
-#   - Backend serves static files directly from frontend/dist
-#   - Backend handles API routes directly
-#   - User accesses: http://localhost:8080
-#   - Flow: User → :8080 (Backend serves static + APIs)
-#
-# ============================================================================
-
-if CONFIG['is_development']:
-    print(f"Development mode: Proxying to Vite dev server on port {CONFIG['vite_port']}")
-
-    import requests
-
-    from flask import Response
-
-    # Catch-all route to proxy to Vite
-    @app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'])
-    @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'])
-    def proxy_to_vite(path):
-        """Proxy all requests to Vite dev server"""
-        vite_url = f"http://localhost:{CONFIG['vite_port']}/{path}"
-        if request.query_string:
-            vite_url += f"?{request.query_string.decode()}"
-
-        try:
-            resp = requests.request(
-                method=request.method,
-                url=vite_url,
-                headers={k: v for k, v in request.headers if k.lower() not in ['host', 'connection']},
-                data=request.get_data(),
-                cookies=request.cookies,
-                allow_redirects=False,
-                stream=True
-            )
-
-            # Forward response from Vite
-            excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-            headers = [(k, v) for k, v in resp.raw.headers.items() if k.lower() not in excluded_headers]
-
-            return Response(resp.content, resp.status_code, headers)
-        except requests.exceptions.RequestException as e:
-            print(f"Error proxying to Vite: {e}")
-            return f"Error: Cannot connect to Vite dev server on port {CONFIG['vite_port']}", 502
-else:
-    print('Production mode: Serving static files from frontend/dist')
-
-    @app.route('/')
-    @app.route('/<path:path>')
-    def serve_static(path=''):
-        """Serve static files from frontend/dist"""
-        if path and os.path.exists(os.path.join(app.static_folder, path)):
-            return send_from_directory(app.static_folder, path)
-        return send_from_directory(app.static_folder, 'index.html')
 
 # ============================================================================
 # WEBSOCKET ENDPOINT - Voice Agent (Simple Pass-Through Proxy)
@@ -287,15 +212,17 @@ def voice_agent(ws):
 if __name__ == '__main__':
     port = CONFIG['port']
     host = CONFIG['host']
+    frontend_port = CONFIG['frontend_port']
     debug = os.environ.get('FLASK_DEBUG', '0') == '1'
 
     print('\n' + '=' * 70)
-    print(f"Flask Voice Agent Server running at http://localhost:{port}")
-    print(f"WebSocket endpoint: ws://localhost:{port}/agent/converse")
-    print(f"Metadata endpoint: http://localhost:{port}/api/metadata")
-    if CONFIG['is_development']:
-        print(f"Make sure Vite dev server is running on port {CONFIG['vite_port']}")
-        print(f"\n⚠️  Open your browser to http://localhost:{port}")
+    print(f"🚀 Flask Voice Agent Server (Backend API)")
+    print('=' * 70)
+    print(f"Backend:  http://localhost:{port}")
+    print(f"Frontend: http://localhost:{frontend_port}")
+    print(f"WebSocket: ws://localhost:{port}/agent/converse")
+    print(f"CORS:     Enabled for frontend port {frontend_port}")
+    print(f"Debug:    {'ON' if debug else 'OFF'}")
     print('=' * 70 + '\n')
 
     # Run Flask app
