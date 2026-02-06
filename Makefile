@@ -104,21 +104,29 @@ test:
 	@bash contracts/tests/run-voice-agent-app.sh
 
 update:
-	@echo "Updating submodules..."
+	@echo "==> Updating submodules..."
 	git submodule update --remote --merge
-	@echo "Submodules updated!"
+	@echo "✓ Submodules updated"
 
 clean:
-	@echo "Cleaning build artifacts..."
+	@echo "==> Cleaning build artifacts..."
 	rm -rf venv/
 	rm -rf frontend/node_modules/
-	rm -rf frontend/dist/
+	rm -rf frontend/.vite/
 	rm -rf __pycache__/
-	rm -rf *.pyc
-	@echo "Clean complete!"
+	rm -rf */__pycache__/
+	rm -rf */*/__pycache__/
+	@echo "✓ Cleaned successfully"
 
 status:
-	@echo "Git status:"
-	@git status --short
-	@echo "\nSubmodule status:"
-	@git submodule status
+	@echo "==> Repository Status"
+	@echo "====================="
+	@echo ""
+	@echo "Main Repository:"
+	git status --short
+	@echo ""
+	@echo "Submodule Status:"
+	git submodule status
+	@echo ""
+	@echo "Submodule Branches:"
+	@cd frontend && echo "frontend: $$(git branch --show-current) ($$(git rev-parse --short HEAD))"
