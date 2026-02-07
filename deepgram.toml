@@ -4,9 +4,10 @@ description = "Flask WebSocket proxy for Deepgram's Voice Agent API"
 author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
 repository = "https://github.com/deepgram-starters/flask-voice-agent"
 useCase = "voice-agent"
-language = "Python"
-framework = "Flask"
+language = "python"
+framework = "flask"
 sdk = "N/A"
+tags = ["voice-agent", "conversational-ai", "voice-ai", "voice-bot", "python", "flask"]
 
 # Check prerequisites
 [check]
