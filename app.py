@@ -3,6 +3,10 @@ Flask Voice Agent Starter - Backend Server
 
 Simple WebSocket proxy to Deepgram's Voice Agent API.
 Forwards all messages (JSON and binary) bidirectionally between client and Deepgram.
+
+API Endpoints:
+- WS /api/voice-agent - WebSocket proxy to Deepgram Voice Agent API
+- GET /api/metadata - Application metadata
 """
 
 import os
@@ -27,7 +31,6 @@ CONFIG = {
     'deepgram_agent_url': 'wss://agent.deepgram.com/v1/agent/converse',
     'port': int(os.environ.get('PORT', 8081)),
     'host': os.environ.get('HOST', '0.0.0.0'),
-    'frontend_port': int(os.environ.get('FRONTEND_PORT', 8080)),
 }
 
 # Validate required environment variables
@@ -52,11 +55,7 @@ if not CONFIG['deepgram_api_key']:
 app = Flask(__name__)
 
 # Enable CORS for frontend communication
-# Frontend runs on port 8080, backend on port 8081
-CORS(app, origins=[
-    f"http://localhost:{CONFIG['frontend_port']}",
-    f"http://127.0.0.1:{CONFIG['frontend_port']}"
-], supports_credentials=True)
+CORS(app)
 
 # Initialize native WebSocket support
 sock = Sock(app)
@@ -91,13 +90,13 @@ def metadata():
 # WEBSOCKET ENDPOINT - Voice Agent (Simple Pass-Through Proxy)
 # ============================================================================
 
-@sock.route('/agent/converse')
+@sock.route('/api/voice-agent')
 def voice_agent(ws):
     """
     WebSocket endpoint for voice agent conversations
     Simple pass-through proxy - forwards all messages bidirectionally
     """
-    print('Client connected to /agent/converse')
+    print('Client connected to /api/voice-agent')
 
     # Thread control
     stop_event = threading.Event()
@@ -212,16 +211,16 @@ def voice_agent(ws):
 if __name__ == '__main__':
     port = CONFIG['port']
     host = CONFIG['host']
-    frontend_port = CONFIG['frontend_port']
     debug = os.environ.get('FLASK_DEBUG', '0') == '1'
 
     print('\n' + '=' * 70)
-    print(f"🚀 Flask Voice Agent Server (Backend API)")
+    print(f"🚀 Flask Voice Agent Server")
     print('=' * 70)
-    print(f"Backend:  http://localhost:{port}")
-    print(f"Frontend: http://localhost:{frontend_port}")
-    print(f"WebSocket: ws://localhost:{port}/agent/converse")
-    print(f"CORS:     Enabled for frontend port {frontend_port}")
+    print(f"Listening on http://{host}:{port}")
+    print("")
+    print("📡 WS   /api/voice-agent")
+    print("📡 GET  /api/metadata")
+    print("")
     print(f"Debug:    {'ON' if debug else 'OFF'}")
     print('=' * 70 + '\n')
 
