@@ -1,4 +1,4 @@
-.PHONY: help check check-prereqs init install install-backend install-frontend start-backend start-frontend start test update clean status eject-frontend
+.PHONY: help check check-prereqs ensure-corepack init install install-backend install-frontend start-backend start-frontend start test update clean status eject-frontend
 
 help:
 	@echo "Available commands:"
@@ -19,10 +19,18 @@ check-prereqs:
 	@command -v git >/dev/null 2>&1 || { echo "❌ git is required but not installed. Visit https://git-scm.com"; exit 1; }
 	@command -v python3 >/dev/null 2>&1 || { echo "❌ python3 is required but not installed. Visit https://python.org"; exit 1; }
 	@command -v pip3 >/dev/null 2>&1 || { echo "❌ pip3 is required but not installed."; exit 1; }
+	@command -v node >/dev/null 2>&1 || { echo "❌ node is required but not installed. Visit https://nodejs.org"; exit 1; }
+	@command -v npm >/dev/null 2>&1 || { echo "❌ npm is required but not installed. Visit https://nodejs.org"; exit 1; }
 	@echo "✓ All prerequisites installed"
 	@echo ""
 
-init: check-prereqs
+ensure-corepack:
+	@command -v corepack >/dev/null 2>&1 || { \
+		echo "==> Installing corepack (not bundled with Node.js 25+)..."; \
+		npm install -g corepack; \
+	}
+
+init: check-prereqs ensure-corepack
 	@echo "==> Initializing submodules..."
 	git submodule update --init --recursive
 	@echo ""
@@ -49,7 +57,7 @@ install-backend:
 	python3 -m venv venv
 	./venv/bin/pip install -r requirements.txt
 
-install-frontend:
+install-frontend: ensure-corepack
 	@echo "==> Installing frontend dependencies..."
 	@if [ ! -d "frontend" ] || [ -z "$$(ls -A frontend)" ]; then \
 		echo "❌ Error: Frontend submodule not initialized. Run 'make init' first."; \
@@ -65,7 +73,7 @@ start-backend:
 	@echo "==> Starting backend on http://localhost:8081"
 	./venv/bin/python app.py
 
-start-frontend:
+start-frontend: ensure-corepack
 	@if [ ! -d "frontend" ] || [ -z "$$(ls -A frontend)" ]; then \
 		echo "❌ Error: Frontend submodule not initialized. Run 'make init' first."; \
 		exit 1; \
