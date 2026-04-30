@@ -218,7 +218,13 @@ def voice_agent(ws):
             header=[f"Authorization: Token {CONFIG['deepgram_api_key']}"],
             timeout=10
         )
-        print('✓ Connected to Deepgram Agent API')
+        # Log Deepgram request ID from the upgrade response — essential for support tickets.
+        dg_headers = getattr(deepgram_ws.handshake_response, 'headers', {}) or {}
+        request_id = next(
+            (v for k, v in dict(dg_headers).items() if k.lower() == 'dg-request-id'),
+            None,
+        )
+        print(f'✓ Connected to Deepgram Agent API (dg-request-id={request_id})')
 
         # Start thread to forward Deepgram → Client
         forward_thread = threading.Thread(target=forward_from_deepgram, daemon=True)
