@@ -203,9 +203,22 @@ def voice_agent(ws):
     # microphone audio; text frames are JSON control messages, forwarded verbatim.
     try:
         with deepgram.agent.v1.connect() as connection:
+            def _on_deepgram_error(e):
+                print(f"Deepgram error: {e}")
+                # Give the browser a structured Error frame before teardown so a
+                # mid-session Deepgram error surfaces in the UI, matching the
+                # pre-migration PROVIDER_ERROR contract (previously the browser
+                # just saw the socket close with no payload).
+                _forward_to_browser(ws, {
+                    "type": "Error",
+                    "description": str(e),
+                    "code": "PROVIDER_ERROR",
+                })
+                stop_event.set()
+
             connection.on(EventType.MESSAGE, lambda m: _forward_to_browser(ws, m))
             connection.on(EventType.CLOSE, lambda _: stop_event.set())
-            connection.on(EventType.ERROR, lambda e: (print(f"Deepgram error: {e}"), stop_event.set()))
+            connection.on(EventType.ERROR, _on_deepgram_error)
 
             # start_listening() blocks, so run it in a background thread while the
             # main thread forwards browser messages to Deepgram.
@@ -228,6 +241,13 @@ def voice_agent(ws):
                     else:
                         # Forward the browser's JSON control frame (Settings, Update*,
                         # InjectAgentMessage, KeepAlive, ...) to Deepgram verbatim.
+                        #
+                        # NOTE: agent.v1 exposes only *typed* senders (send_settings,
+                        # send_update_prompt, ...) and no public raw/dict send, so a
+                        # transparent proxy has to use the private _send() here. This
+                        # relies on a private, non-semver-stable method; it works
+                        # because the SDK version is pinned. Tracking a public
+                        # raw/dict send on the agent socket client upstream.
                         connection._send(data)
                 except Exception as e:
                     print(f'Error forwarding to Deepgram: {e}')
