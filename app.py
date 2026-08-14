@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
+from deepgram.core.api_error import ApiError
 
 # Monkey-patch simple-websocket to echo back the access_token.* subprotocol.
 # flask-sock uses simple-websocket's Server class for the WebSocket handshake.
@@ -76,6 +77,18 @@ if not CONFIG['deepgram_api_key']:
 
 # One SDK client, reused across connections; the browser never sees the API key.
 deepgram = DeepgramClient(api_key=CONFIG['deepgram_api_key'])
+
+
+def _safe_error_detail(e):
+    """Sanitize a Deepgram error before it reaches the browser or logs.
+
+    NEVER surface str(e): a deepgram-sdk ApiError stringifies its request
+    headers, which include Authorization: Token <api-key> — a bad connect
+    would otherwise leak the key to the browser and the server logs.
+    """
+    if isinstance(e, ApiError):
+        return f"Deepgram rejected the connection (HTTP {e.status_code})"
+    return f"Failed to connect to Deepgram ({type(e).__name__})"
 
 
 def _forward_to_browser(ws, message):
@@ -204,14 +217,15 @@ def voice_agent(ws):
     try:
         with deepgram.agent.v1.connect() as connection:
             def _on_deepgram_error(e):
-                print(f"Deepgram error: {e}")
+                detail = _safe_error_detail(e)
+                print(f"Deepgram error: {detail}")
                 # Give the browser a structured Error frame before teardown so a
                 # mid-session Deepgram error surfaces in the UI, matching the
                 # pre-migration PROVIDER_ERROR contract (previously the browser
                 # just saw the socket close with no payload).
                 _forward_to_browser(ws, {
                     "type": "Error",
-                    "description": str(e),
+                    "description": detail,
                     "code": "PROVIDER_ERROR",
                 })
                 stop_event.set()
@@ -250,10 +264,10 @@ def voice_agent(ws):
                         # raw/dict send on the agent socket client upstream.
                         connection._send(data)
                 except Exception as e:
-                    print(f'Error forwarding to Deepgram: {e}')
+                    print(f'Error forwarding to Deepgram: {_safe_error_detail(e)}')
 
     except Exception as e:
-        print(f'Error in WebSocket handler: {e}')
+        print(f'Error in WebSocket handler: {_safe_error_detail(e)}')
         try:
             ws.send(json.dumps({
                 'type': 'Error',
