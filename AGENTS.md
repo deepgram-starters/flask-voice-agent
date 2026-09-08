@@ -120,7 +120,7 @@ The frontend sends a `Settings` message after connecting:
 
 ### Live Updates (no reconnect needed)
 The frontend can update these settings mid-conversation:
-- `{ "type": "UpdateSpeak", "model": "aura-2-luna-en" }` — Change voice
+- `{ "type": "UpdateSpeak", "speak": { "provider": { "type": "deepgram", "model": "aura-2-luna-en" } } }` — Change voice
 - `{ "type": "UpdatePrompt", "prompt": "New instructions..." }` — Change prompt
 - `{ "type": "InjectUserMessage", "content": "text" }` — Send text as user
 

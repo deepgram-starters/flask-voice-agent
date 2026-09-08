@@ -24,6 +24,7 @@ from flask_cors import CORS
 from simple_websocket import Server as _WsServer
 import toml
 from dotenv import load_dotenv
+from websockets.exceptions import InvalidStatus
 
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
@@ -56,7 +57,6 @@ load_dotenv(override=False)
 
 CONFIG = {
     'deepgram_api_key': os.environ.get('DEEPGRAM_API_KEY'),
-    'deepgram_agent_url': 'wss://agent.deepgram.com/v1/agent/converse',
     'port': int(os.environ.get('PORT', 8081)),
     'host': os.environ.get('HOST', '0.0.0.0'),
 }
@@ -88,6 +88,8 @@ def _safe_error_detail(e):
     """
     if isinstance(e, ApiError):
         return f"Deepgram rejected the connection (HTTP {e.status_code})"
+    if isinstance(e, InvalidStatus):
+        return f"Deepgram rejected the connection (HTTP {e.response.status_code})"
     return f"Failed to connect to Deepgram ({type(e).__name__})"
 
 
@@ -238,6 +240,9 @@ def voice_agent(ws):
             # main thread forwards browser messages to Deepgram.
             threading.Thread(target=connection.start_listening, daemon=True).start()
             print('✓ Connected to Deepgram Agent API')
+            request_id = connection._websocket.response.headers.get("dg-request-id")
+            if request_id:
+                print(f"Deepgram request ID: {request_id}")
 
             while not stop_event.is_set():
                 try:
@@ -260,8 +265,8 @@ def voice_agent(ws):
                         # send_update_prompt, ...) and no public raw/dict send, so a
                         # transparent proxy has to use the private _send() here. This
                         # relies on a private, non-semver-stable method; it works
-                        # because the SDK version is pinned. Tracking a public
-                        # raw/dict send on the agent socket client upstream.
+                        # because the SDK version is pinned. Tracking a public sender:
+                        # https://github.com/deepgram/deepgram-python-sdk/issues/785
                         connection._send(data)
                 except Exception as e:
                     print(f'Error forwarding to Deepgram: {_safe_error_detail(e)}')
