@@ -8,6 +8,7 @@ Flask demo app for Deepgram Voice Agent.
 - **Frontend:** Vite + vanilla JS on port 8080 (git submodule: `voice-agent-html`)
 - **API type:** WebSocket — `WS /api/voice-agent`
 - **Deepgram API:** Agent API (`wss://agent.deepgram.com/v1/agent/converse`)
+- **Deepgram client:** `deepgram-sdk` 7.x via `deepgram.agent.v1.connect()`
 - **Auth:** JWT session tokens via `/api/session` (WebSocket auth uses `access_token.<jwt>` subprotocol)
 
 ## Key Files
@@ -67,7 +68,7 @@ make init
 
 ## Dependencies
 
-- **Backend:** `requirements.txt` — Uses Python venv for isolation. Always activate venv before running.
+- **Backend:** `requirements.txt` — Uses Python venv for isolation. Always activate venv before running. `deepgram-sdk>=7.7.0,<8` uses 7.7.0 or newer because it redacts Authorization headers in errors.
 - **Frontend:** `frontend/package.json` — Vite dev server
 - **Submodules:** `frontend/` (voice-agent-html), `contracts/` (starter-contracts)
 
@@ -85,7 +86,7 @@ Frontend: `cd frontend && corepack pnpm install`
 ## Customization Guide
 
 ### How the Agent Works
-The backend is a **pure WebSocket proxy** — it forwards messages between the browser and Deepgram's Agent API. All agent configuration happens via JSON messages from the frontend.
+The backend is a WebSocket proxy backed by `deepgram.agent.v1.connect()` — it forwards messages between the browser and Deepgram's Agent API. All agent configuration happens via JSON messages from the frontend. Raw control frames deliberately use the SDK's private `_send()` so unmodeled Settings fields pass through; do not replace it with typed senders until [deepgram-python-sdk#785](https://github.com/deepgram/deepgram-python-sdk/issues/785) provides a public raw sender.
 
 ### Agent Settings (sent from frontend)
 The frontend sends a `Settings` message after connecting:
