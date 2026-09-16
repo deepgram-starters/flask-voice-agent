@@ -307,7 +307,7 @@ def voice_agent(ws):
         try:
             ws.send(json.dumps({
                 'type': 'Error',
-                'description': 'Failed to establish proxy connection',
+                'description': _safe_error_detail(e),
                 'code': 'CONNECTION_FAILED'
             }))
         except Exception:

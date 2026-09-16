@@ -1,9 +1,12 @@
+import json
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("DEEPGRAM_API_KEY", "test-api-key")
 
 from app import (
+    app,
     _connection_request_id,
     _forward_to_browser,
     _require_raw_sender,
@@ -41,6 +44,39 @@ class SafeErrorDetailTests(unittest.TestCase):
             _safe_error_detail(RuntimeError()),
             "Deepgram connection error (RuntimeError)",
         )
+
+    def test_connection_error_forwards_sanitized_detail_to_browser(self):
+        class Browser:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, message):
+                self.messages.append(message)
+
+        class FailedConnection:
+            def __enter__(self):
+                raise ApiError(
+                    status_code=401,
+                    headers={"Authorization": "Token FAKE"},
+                    body="invalid credentials",
+                )
+
+            def __exit__(self, *_):
+                return False
+
+        browser = Browser()
+        with (
+            patch("app.validate_ws_token", return_value="access_token.test"),
+            patch("app.deepgram.agent.v1.connect", return_value=FailedConnection()),
+        ):
+            app.view_functions["voice_agent"].__wrapped__(browser)
+
+        error = json.loads(browser.messages[0])
+        self.assertEqual(
+            error["description"],
+            "Deepgram rejected the connection (HTTP 401)",
+        )
+        self.assertNotIn("FAKE", browser.messages[0])
 
 
 class SdkCompatibilityTests(unittest.TestCase):
