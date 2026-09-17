@@ -28,8 +28,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend source and config
-COPY *.py *.toml sample.env ./
+# Copy the runtime backend source and config.
+COPY app.py deepgram.toml sample.env ./
 COPY config.json* ./
 
 # Copy built frontend
@@ -42,6 +42,7 @@ RUN chmod +x ./start.sh
 
 ENV PORT=8081
 ENV HOST=0.0.0.0
+ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 
 ENV BACKEND_CMD="python app.py"

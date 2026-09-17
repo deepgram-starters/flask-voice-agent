@@ -6,7 +6,7 @@ repository = "https://github.com/deepgram-starters/flask-voice-agent"
 useCase = "voice-agent"
 language = "python"
 framework = "flask"
-sdk = "N/A"
+sdk = "deepgram-sdk"
 tags = ["voice-agent", "conversational-ai", "voice-ai", "voice-bot", "python", "flask"]
 
 # Check prerequisites

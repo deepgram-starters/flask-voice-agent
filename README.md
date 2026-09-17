@@ -12,6 +12,8 @@ Click the button below to fork the repo:
 
 ## Local Development
 
+Requires Python 3.10 or later.
+
 <!--
 ### CLI
 
