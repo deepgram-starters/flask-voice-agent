@@ -28,8 +28,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend source and config
-COPY *.py *.toml sample.env ./
+# Copy the runtime backend source and config.
+COPY app.py deepgram.toml sample.env ./
 COPY config.json* ./
 
 # Copy built frontend

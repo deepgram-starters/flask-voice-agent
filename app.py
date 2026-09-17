@@ -24,12 +24,31 @@ from flask_cors import CORS
 from simple_websocket import ConnectionClosed, Server as _WsServer
 import toml
 from dotenv import load_dotenv
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import ConnectionClosedOK, InvalidStatus
 
 from deepgram import DeepgramClient
-from deepgram.agent.v1.socket_client import V1SocketClient
 from deepgram.core.events import EventType
 from deepgram.core.api_error import ApiError
+
+
+_RAW_SENDER_COMPATIBILITY_ERROR = (
+    "deepgram-sdk no longer exposes V1SocketClient._send(). Pin the last 7.x "
+    "release that has it, or see "
+    "https://github.com/deepgram/deepgram-python-sdk/issues/785 for the public "
+    "replacement."
+)
+
+
+def _load_socket_client_class():
+    """Load the private SDK class with a clear compatibility error."""
+    try:
+        from deepgram.agent.v1.socket_client import V1SocketClient
+    except ModuleNotFoundError:
+        raise SystemExit(_RAW_SENDER_COMPATIBILITY_ERROR) from None
+    return V1SocketClient
+
+
+V1SocketClient = _load_socket_client_class()
 
 # Monkey-patch simple-websocket to echo back the access_token.* subprotocol.
 # flask-sock uses simple-websocket's Server class for the WebSocket handshake.
@@ -80,11 +99,7 @@ if not CONFIG['deepgram_api_key']:
 def _require_raw_sender(socket_client_class):
     """Fail fast when the SDK no longer supports raw control-frame forwarding."""
     if not callable(getattr(socket_client_class, "_send", None)):
-        raise SystemExit(
-            "deepgram-sdk no longer exposes V1SocketClient._send(); pin "
-            "deepgram-sdk==7.8.1 or see "
-            "https://github.com/deepgram/deepgram-python-sdk/issues/785"
-        )
+        raise SystemExit(_RAW_SENDER_COMPATIBILITY_ERROR)
 
 
 _require_raw_sender(V1SocketClient)
@@ -299,6 +314,9 @@ def voice_agent(ws):
                         # because it is bounded to <8, not pinned. Tracking a public sender:
                         # https://github.com/deepgram/deepgram-python-sdk/issues/785
                         connection._send(data)
+                except ConnectionClosedOK:
+                    # A clean Deepgram close is expected during browser teardown.
+                    break
                 except Exception as e:
                     print(f'Error forwarding to Deepgram: {_safe_error_detail(e)}')
 

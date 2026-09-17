@@ -9,6 +9,7 @@ from app import (
     app,
     _connection_request_id,
     _forward_to_browser,
+    _load_socket_client_class,
     _require_raw_sender,
     _safe_error_detail,
 )
@@ -83,6 +84,52 @@ class SdkCompatibilityTests(unittest.TestCase):
     def test_missing_raw_sender_stops_startup(self):
         with self.assertRaisesRegex(SystemExit, "V1SocketClient._send"):
             _require_raw_sender(object)
+
+    def test_missing_socket_client_module_stops_startup(self):
+        with patch("builtins.__import__", side_effect=ModuleNotFoundError):
+            with self.assertRaisesRegex(SystemExit, "last 7.x release"):
+                _load_socket_client_class()
+
+
+class VoiceAgentCloseTests(unittest.TestCase):
+    def test_clean_deepgram_close_is_not_logged_as_an_error(self):
+        class NormalClose(Exception):
+            pass
+
+        class Browser:
+            def receive(self, timeout):
+                return '{"type":"KeepAlive"}'
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def on(self, *_):
+                pass
+
+            def start_listening(self):
+                pass
+
+            def _send(self, _):
+                raise NormalClose()
+
+        with (
+            patch("app.ConnectionClosedOK", NormalClose),
+            patch("app.validate_ws_token", return_value="access_token.test"),
+            patch("app.deepgram.agent.v1.connect", return_value=Connection()),
+            patch("builtins.print") as log,
+        ):
+            app.view_functions["voice_agent"].__wrapped__(Browser())
+
+        self.assertFalse(
+            any(
+                args and "Error forwarding to Deepgram" in args[0]
+                for args, _ in log.call_args_list
+            )
+        )
 
 
 class MessageForwardingTests(unittest.TestCase):
