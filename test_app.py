@@ -1,4 +1,5 @@
 import json
+import inspect
 import os
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from app import (
     _load_socket_client_class,
     _require_raw_sender,
     _safe_error_detail,
+    V1SocketClient,
 )
 from deepgram.core.api_error import ApiError
 from simple_websocket import ConnectionClosed
@@ -81,6 +83,11 @@ class SafeErrorDetailTests(unittest.TestCase):
 
 
 class SdkCompatibilityTests(unittest.TestCase):
+    def test_sdk_raw_sender_accepts_one_control_payload(self):
+        parameters = list(inspect.signature(V1SocketClient._send).parameters.values())
+        self.assertEqual(len(parameters), 2)
+        self.assertEqual(parameters[1].default, inspect.Parameter.empty)
+
     def test_missing_raw_sender_stops_startup(self):
         with self.assertRaisesRegex(SystemExit, "V1SocketClient._send"):
             _require_raw_sender(object)
