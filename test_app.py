@@ -1,5 +1,4 @@
 import json
-import inspect
 import os
 import unittest
 from unittest.mock import patch
@@ -16,6 +15,7 @@ from app import (
     V1SocketClient,
 )
 from deepgram.core.api_error import ApiError
+from deepgram.agent.v1.types import AgentV1Welcome
 from simple_websocket import ConnectionClosed
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
@@ -83,10 +83,18 @@ class SafeErrorDetailTests(unittest.TestCase):
 
 
 class SdkCompatibilityTests(unittest.TestCase):
-    def test_sdk_raw_sender_accepts_one_control_payload(self):
-        parameters = list(inspect.signature(V1SocketClient._send).parameters.values())
-        self.assertEqual(len(parameters), 2)
-        self.assertEqual(parameters[1].default, inspect.Parameter.empty)
+    def test_sdk_raw_sender_forwards_a_control_payload_to_its_websocket(self):
+        class WebSocket:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, message):
+                self.sent.append(message)
+
+        websocket = WebSocket()
+        V1SocketClient(websocket=websocket)._send({"type": "KeepAlive"})
+
+        self.assertEqual([{"type": "KeepAlive"}], [json.loads(message) for message in websocket.sent])
 
     def test_missing_raw_sender_stops_startup(self):
         with self.assertRaisesRegex(SystemExit, "V1SocketClient._send"):
@@ -124,7 +132,7 @@ class VoiceAgentCloseTests(unittest.TestCase):
                 raise NormalClose()
 
         with (
-            patch("app.ConnectionClosedOK", NormalClose),
+            patch("app.DeepgramConnectionClosed", NormalClose),
             patch("app.validate_ws_token", return_value="access_token.test"),
             patch("app.deepgram.agent.v1.connect", return_value=Connection()),
             patch("builtins.print") as log,
@@ -147,15 +155,14 @@ class MessageForwardingTests(unittest.TestCase):
         def send(self, message):
             self.messages.append(message)
 
-    class PydanticV1Message:
-        def json(self):
-            return '{"type":"Welcome","extra":"preserved"}'
-
-    def test_pydantic_v1_messages_use_json(self):
+    def test_real_sdk_messages_are_forwarded_as_json(self):
         browser = self.Browser()
 
-        self.assertTrue(_forward_to_browser(browser, self.PydanticV1Message()))
-        self.assertEqual(browser.messages, ['{"type":"Welcome","extra":"preserved"}'])
+        self.assertTrue(_forward_to_browser(browser, AgentV1Welcome(request_id="request-123")))
+        self.assertEqual(
+            [{"type": "Welcome", "request_id": "request-123"}],
+            [json.loads(message) for message in browser.messages],
+        )
 
     def test_browser_disconnect_stops_forwarding_without_raising(self):
         class DisconnectedBrowser:

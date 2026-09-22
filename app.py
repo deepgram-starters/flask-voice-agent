@@ -21,10 +21,10 @@ import jwt
 from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 from flask_cors import CORS
-from simple_websocket import ConnectionClosed, Server as _WsServer
+from simple_websocket import ConnectionClosed as BrowserConnectionClosed, Server as _WsServer
 import toml
 from dotenv import load_dotenv
-from websockets.exceptions import ConnectionClosedOK, InvalidStatus
+from websockets.exceptions import ConnectionClosed as DeepgramConnectionClosed, InvalidStatus
 
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
@@ -291,7 +291,7 @@ def voice_agent(ws):
             while not stop_event.is_set():
                 try:
                     data = ws.receive(timeout=1.0)
-                except ConnectionClosed:
+                except BrowserConnectionClosed:
                     break
                 except Exception as e:
                     if not stop_event.is_set():
@@ -314,8 +314,8 @@ def voice_agent(ws):
                         # because it is bounded to <8, not pinned. Tracking a public sender:
                         # https://github.com/deepgram/deepgram-python-sdk/issues/785
                         connection._send(data)
-                except ConnectionClosedOK:
-                    # A clean Deepgram close is expected during browser teardown.
+                except DeepgramConnectionClosed:
+                    # Deepgram has ended the session; its close callback handles teardown.
                     break
                 except Exception as e:
                     print(f'Error forwarding to Deepgram: {_safe_error_detail(e)}')
