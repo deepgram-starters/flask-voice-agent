@@ -21,10 +21,34 @@ import jwt
 from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 from flask_cors import CORS
-from simple_websocket import Server as _WsServer
-import websocket
+from simple_websocket import ConnectionClosed as BrowserConnectionClosed, Server as _WsServer
 import toml
 from dotenv import load_dotenv
+from websockets.exceptions import ConnectionClosed as DeepgramConnectionClosed, InvalidStatus
+
+from deepgram import DeepgramClient
+from deepgram.core.events import EventType
+from deepgram.core.api_error import ApiError
+
+
+_RAW_SENDER_COMPATIBILITY_ERROR = (
+    "deepgram-sdk no longer exposes V1SocketClient._send(). Pin the last 7.x "
+    "release that has it, or see "
+    "https://github.com/deepgram/deepgram-python-sdk/issues/785 for the public "
+    "replacement."
+)
+
+
+def _load_socket_client_class():
+    """Load the private SDK class with a clear compatibility error."""
+    try:
+        from deepgram.agent.v1.socket_client import V1SocketClient
+    except ModuleNotFoundError:
+        raise SystemExit(_RAW_SENDER_COMPATIBILITY_ERROR) from None
+    return V1SocketClient
+
+
+V1SocketClient = _load_socket_client_class()
 
 # Monkey-patch simple-websocket to echo back the access_token.* subprotocol.
 # flask-sock uses simple-websocket's Server class for the WebSocket handshake.
@@ -53,7 +77,6 @@ load_dotenv(override=False)
 
 CONFIG = {
     'deepgram_api_key': os.environ.get('DEEPGRAM_API_KEY'),
-    'deepgram_agent_url': 'wss://agent.deepgram.com/v1/agent/converse',
     'port': int(os.environ.get('PORT', 8081)),
     'host': os.environ.get('HOST', '0.0.0.0'),
 }
@@ -71,6 +94,58 @@ if not CONFIG['deepgram_api_key']:
     print("\nGet your API key at: https://console.deepgram.com")
     print("="*70 + "\n")
     exit(1)
+
+
+def _require_raw_sender(socket_client_class):
+    """Fail fast when the SDK no longer supports raw control-frame forwarding."""
+    if not callable(getattr(socket_client_class, "_send", None)):
+        raise SystemExit(_RAW_SENDER_COMPATIBILITY_ERROR)
+
+
+_require_raw_sender(V1SocketClient)
+
+# One SDK client, reused across connections; the browser never sees the API key.
+deepgram = DeepgramClient(api_key=CONFIG['deepgram_api_key'])
+
+
+def _safe_error_detail(e):
+    """Sanitize a Deepgram error before it reaches the browser or logs.
+
+    NEVER surface str(e): a deepgram-sdk ApiError stringifies its request
+    headers, which include Authorization: Token <api-key> — a bad connect
+    would otherwise leak the key to the browser and the server logs.
+    """
+    if isinstance(e, ApiError):
+        return f"Deepgram rejected the connection (HTTP {e.status_code})"
+    if isinstance(e, InvalidStatus):
+        return f"Deepgram rejected the connection (HTTP {e.response.status_code})"
+    return f"Deepgram connection error ({type(e).__name__})"
+
+
+def _forward_to_browser(ws, message):
+    """Forward one Deepgram message to the browser: bytes as binary audio, models as JSON."""
+    try:
+        if isinstance(message, (bytes, bytearray)):
+            ws.send(bytes(message))
+        elif isinstance(message, dict):
+            ws.send(json.dumps(message))
+        elif hasattr(message, "json"):
+            ws.send(message.json())
+        else:
+            ws.send(json.dumps({"type": getattr(message, "type", "Unknown")}))
+        return True
+    except Exception:
+        return False
+
+
+def _connection_request_id(connection):
+    """Return the optional request ID without depending on SDK internals at runtime."""
+    # The SDK has no public handshake-metadata API. Losing this optional support
+    # identifier must not disrupt an otherwise healthy agent conversation.
+    websocket = getattr(connection, "_websocket", None)
+    response = getattr(websocket, "response", None)
+    headers = getattr(response, "headers", None)
+    return headers.get("dg-request-id") if headers else None
 
 # ============================================================================
 # SESSION AUTH - JWT tokens with rate limiting for production security
@@ -175,116 +250,90 @@ def voice_agent(ws):
 
     print('Client connected to /api/voice-agent')
 
-    # Thread control
     stop_event = threading.Event()
-    deepgram_ws = None
 
-    def forward_from_deepgram():
-        """Thread to forward messages from Deepgram to client"""
-        try:
-            while not stop_event.is_set() and deepgram_ws:
+    # Bridge browser <-> Deepgram Voice Agent through the official SDK (agent.v1).
+    # This is a transparent proxy: the browser drives the full agent protocol
+    # (it sends the Settings message and every control frame). Binary frames are
+    # microphone audio; text frames are JSON control messages, forwarded verbatim.
+    try:
+        with deepgram.agent.v1.connect() as connection:
+            def _on_deepgram_error(e):
+                detail = _safe_error_detail(e)
+                print(f"Deepgram error: {detail}")
+                # Give the browser a structured Error frame before teardown so a
+                # mid-session Deepgram error surfaces in the UI, matching the
+                # pre-migration PROVIDER_ERROR contract (previously the browser
+                # just saw the socket close with no payload).
+                _forward_to_browser(ws, {
+                    "type": "Error",
+                    "description": detail,
+                    "code": "PROVIDER_ERROR",
+                })
+                stop_event.set()
+
+            def _on_deepgram_message(message):
+                if not _forward_to_browser(ws, message):
+                    stop_event.set()
+
+            connection.on(EventType.MESSAGE, _on_deepgram_message)
+            connection.on(EventType.CLOSE, lambda _: stop_event.set())
+            connection.on(EventType.ERROR, _on_deepgram_error)
+
+            # start_listening() blocks, so run it in a background thread while the
+            # main thread forwards browser messages to Deepgram.
+            threading.Thread(target=connection.start_listening, daemon=True).start()
+            print('✓ Connected to Deepgram Agent API')
+            request_id = _connection_request_id(connection)
+            if request_id:
+                print(f"Deepgram request ID: {request_id}")
+
+            while not stop_event.is_set():
                 try:
-                    # Receive from Deepgram (with timeout to check stop_event)
-                    deepgram_ws.settimeout(1.0)
-                    message = deepgram_ws.recv()
-
-                    if message:
-                        # Forward to client (preserves binary/text)
-                        ws.send(message)
-                except websocket.WebSocketTimeoutException:
-                    # Timeout is normal - just check stop_event and continue
-                    continue
+                    data = ws.receive(timeout=1.0)
+                except BrowserConnectionClosed:
+                    break
                 except Exception as e:
                     if not stop_event.is_set():
-                        print(f'Error receiving from Deepgram: {e}')
+                        print(f'Error in client receive loop: {e}')
                     break
-        finally:
-            stop_event.set()
-
-    try:
-        # Validate API key
-        if not CONFIG['deepgram_api_key']:
-            ws.send(json.dumps({
-                'type': 'Error',
-                'description': 'Missing API key',
-                'code': 'MISSING_API_KEY'
-            }))
-            return
-
-        # Create raw WebSocket connection to Deepgram Agent API
-        print('Initiating Deepgram connection...')
-        deepgram_ws = websocket.create_connection(
-            CONFIG['deepgram_agent_url'],
-            header=[f"Authorization: Token {CONFIG['deepgram_api_key']}"],
-            timeout=10
-        )
-        # Log Deepgram request ID from the upgrade response — essential for support tickets.
-        dg_headers = getattr(deepgram_ws.handshake_response, 'headers', {}) or {}
-        request_id = next(
-            (v for k, v in dict(dg_headers).items() if k.lower() == 'dg-request-id'),
-            None,
-        )
-        print(f'✓ Connected to Deepgram Agent API (dg-request-id={request_id})')
-
-        # Start thread to forward Deepgram → Client
-        forward_thread = threading.Thread(target=forward_from_deepgram, daemon=True)
-        forward_thread.start()
-
-        # Main loop: forward Client → Deepgram
-        while not stop_event.is_set():
-            try:
-                # Receive from client (with timeout to check stop_event)
-                data = ws.receive(timeout=1.0)
-
                 if data is None:
-                    # Timeout or connection closed
-                    if stop_event.is_set():
-                        break
                     continue
 
-                # Forward to Deepgram (preserves binary/text)
-                if isinstance(data, bytes):
-                    deepgram_ws.send_binary(data)
-                else:
-                    deepgram_ws.send(data)
+                try:
+                    if isinstance(data, (bytes, bytearray)):
+                        connection.send_media(bytes(data))
+                    else:
+                        # Forward the browser's JSON control frame (Settings, Update*,
+                        # InjectAgentMessage, KeepAlive, ...) to Deepgram verbatim.
+                        #
+                        # NOTE: agent.v1 exposes only *typed* senders (send_settings,
+                        # send_update_prompt, ...) and no public raw/dict send, so a
+                        # transparent proxy has to use the private _send() here. This
+                        # relies on a private, non-semver-stable method; it works
+                        # because it is bounded to <8, not pinned. Tracking a public sender:
+                        # https://github.com/deepgram/deepgram-python-sdk/issues/785
+                        connection._send(data)
+                except DeepgramConnectionClosed:
+                    # Deepgram has ended the session; its close callback handles teardown.
+                    break
+                except Exception as e:
+                    print(f'Error forwarding to Deepgram: {_safe_error_detail(e)}')
 
-            except Exception as e:
-                if not stop_event.is_set():
-                    print(f'Error in client receive loop: {e}')
-                break
-
-    except websocket.WebSocketException as e:
-        print(f'Deepgram WebSocket error: {e}')
-        try:
-            ws.send(json.dumps({
-                'type': 'Error',
-                'description': str(e),
-                'code': 'PROVIDER_ERROR'
-            }))
-        except:
-            pass
     except Exception as e:
-        print(f'Error in WebSocket handler: {e}')
+        print(f'Error in WebSocket handler: {_safe_error_detail(e)}')
         try:
             ws.send(json.dumps({
                 'type': 'Error',
-                'description': 'Failed to establish proxy connection',
+                'description': _safe_error_detail(e),
                 'code': 'CONNECTION_FAILED'
             }))
-        except:
+        except Exception:
             pass
     finally:
         # Cleanup
         print('Cleaning up connection...')
         stop_event.set()
-
-        # Close Deepgram connection
-        if deepgram_ws:
-            try:
-                deepgram_ws.close()
-            except Exception as e:
-                print(f'Error closing Deepgram connection: {e}')
-
         print('Connection cleanup complete')
 
 # ============================================================================

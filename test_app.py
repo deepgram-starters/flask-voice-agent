@@ -1,103 +1,192 @@
-import pytest
-from app import app, socketio, dg_connection
-from flask_socketio import SocketIO
-import threading
-import time
+import json
 import os
-from unittest.mock import Mock, patch
+import unittest
+from unittest.mock import patch
 
-@pytest.fixture
-def client():
-    """Create a test client for the app."""
-    app.config['TESTING'] = True
-    with app.test_client() as client:
-        yield client
+os.environ.setdefault("DEEPGRAM_API_KEY", "test-api-key")
 
-@pytest.fixture
-def socket_client(client):
-    """Create a Socket.IO test client."""
-    return socketio.test_client(app)
+from app import (
+    app,
+    _connection_request_id,
+    _forward_to_browser,
+    _load_socket_client_class,
+    _require_raw_sender,
+    _safe_error_detail,
+    V1SocketClient,
+)
+from deepgram.core.api_error import ApiError
+from deepgram.agent.v1.types import AgentV1Welcome
+from simple_websocket import ConnectionClosed
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
-def test_server_starts_successfully(client):
-    """Test that the server starts successfully."""
-    response = client.get('/')
-    assert response.status_code == 200
-    assert b'Deepgram Voice Agent' in response.data
 
-@patch('app.DeepgramClient')
-def test_websocket_connection(mock_deepgram_client, socket_client):
-    """Test that WebSocket connection is established."""
-    # Set up the mock
-    mock_instance = mock_deepgram_client.return_value
-    mock_agent = Mock()
-    mock_instance.agent = mock_agent
-    mock_websocket = Mock()
-    mock_agent.websocket = mock_websocket
-    mock_websocket.v.return_value = Mock()
+class SafeErrorDetailTests(unittest.TestCase):
+    def test_api_error_does_not_expose_authorization_header(self):
+        detail = _safe_error_detail(
+            ApiError(
+                status_code=401,
+                headers={"Authorization": "Token FAKE"},
+                body="invalid credentials",
+            )
+        )
 
-    # Clear any existing received messages
-    socket_client.get_received()
+        self.assertIn("HTTP 401", detail)
+        self.assertNotIn("FAKE", detail)
 
-    # Trigger a connection
-    socket_client.emit('connect')
+    def test_rejected_websocket_handshake_keeps_its_status(self):
+        detail = _safe_error_detail(
+            InvalidStatus(Response(401, "Unauthorized", Headers()))
+        )
 
-    # Wait for and verify the open event
-    received = socket_client.get_received()
-    assert len(received) > 0
-    assert received[0]['name'] == 'open'
+        self.assertEqual(detail, "Deepgram rejected the connection (HTTP 401)")
 
-    # Simulate the welcome event from Deepgram by emitting it through socketio
-    welcome_data = {'request_id': 'test-request-id'}
-    socketio.emit('welcome', {'data': welcome_data})
+    def test_connection_errors_are_not_reported_as_failed_connections(self):
+        self.assertEqual(
+            _safe_error_detail(RuntimeError()),
+            "Deepgram connection error (RuntimeError)",
+        )
 
-    # Wait a bit for the welcome event to be processed
-    time.sleep(0.5)
+    def test_connection_error_forwards_sanitized_detail_to_browser(self):
+        class Browser:
+            def __init__(self):
+                self.messages = []
 
-    # Get all received messages
-    all_received = socket_client.get_received()
+            def send(self, message):
+                self.messages.append(message)
 
-    # Find the welcome message
-    welcome_messages = [msg for msg in all_received if msg['name'] == 'welcome']
-    assert len(welcome_messages) > 0, "No welcome message received"
-    assert 'request_id' in welcome_messages[0]['args'][0]['data']
+        class FailedConnection:
+            def __enter__(self):
+                raise ApiError(
+                    status_code=401,
+                    headers={"Authorization": "Token FAKE"},
+                    body="invalid credentials",
+                )
 
-def test_deepgram_agent_creation(socket_client):
-    """Test that Deepgram agent is created when WebSocket connects."""
-    # Clear any existing received messages
-    socket_client.get_received()
+            def __exit__(self, *_):
+                return False
 
-    # Trigger a connection
-    socket_client.emit('connect')
+        browser = Browser()
+        with (
+            patch("app.validate_ws_token", return_value="access_token.test"),
+            patch("app.deepgram.agent.v1.connect", return_value=FailedConnection()),
+        ):
+            app.view_functions["voice_agent"].__wrapped__(browser)
 
-    # Wait for the connection to be processed
-    time.sleep(0.5)
+        error = json.loads(browser.messages[0])
+        self.assertEqual(
+            error["description"],
+            "Deepgram rejected the connection (HTTP 401)",
+        )
+        self.assertNotIn("FAKE", browser.messages[0])
 
-    # Verify we get the open event
-    received = socket_client.get_received()
-    assert len(received) > 0, "No events received after connection"
-    assert received[0]['name'] == 'open', "Open event not received"
 
-    # Verify the connection is active
-    assert socket_client.is_connected(), "Socket connection not active"
+class SdkCompatibilityTests(unittest.TestCase):
+    def test_sdk_raw_sender_forwards_a_control_payload_to_its_websocket(self):
+        class WebSocket:
+            def __init__(self):
+                self.sent = []
 
-    # Verify the Deepgram connection exists and is configured
-    assert dg_connection is not None, "Deepgram connection not created"
-    assert hasattr(dg_connection, 'on'), "Deepgram connection not properly initialized"
-    assert hasattr(dg_connection, 'start'), "Deepgram connection not properly initialized"
+            def send(self, message):
+                self.sent.append(message)
 
-def test_handle_audio_data(socket_client):
-    """Test handling of audio data from client."""
-    # Create mock audio data (16-bit PCM)
-    mock_audio_data = bytes([0] * 1024)  # 1KB of silence
+        websocket = WebSocket()
+        V1SocketClient(websocket=websocket)._send({"type": "KeepAlive"})
 
-    # Send audio data
-    socket_client.emit('audio_data', mock_audio_data)
-    time.sleep(0.1)  # Give time for processing
+        self.assertEqual([{"type": "KeepAlive"}], [json.loads(message) for message in websocket.sent])
 
-    # Verify the audio data was sent to Deepgram
-    # Note: This is a basic test. In a real scenario, you'd want to mock
-    # the Deepgram connection and verify it received the data
-    assert dg_connection is not None
+    def test_missing_raw_sender_stops_startup(self):
+        with self.assertRaisesRegex(SystemExit, "V1SocketClient._send"):
+            _require_raw_sender(object)
 
-if __name__ == '__main__':
-    pytest.main(['-v'])
+    def test_missing_socket_client_module_stops_startup(self):
+        with patch("builtins.__import__", side_effect=ModuleNotFoundError):
+            with self.assertRaisesRegex(SystemExit, "last 7.x release"):
+                _load_socket_client_class()
+
+
+class VoiceAgentCloseTests(unittest.TestCase):
+    def test_clean_deepgram_close_is_not_logged_as_an_error(self):
+        class NormalClose(Exception):
+            pass
+
+        class Browser:
+            def receive(self, timeout):
+                return '{"type":"KeepAlive"}'
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def on(self, *_):
+                pass
+
+            def start_listening(self):
+                pass
+
+            def _send(self, _):
+                raise NormalClose()
+
+        with (
+            patch("app.DeepgramConnectionClosed", NormalClose),
+            patch("app.validate_ws_token", return_value="access_token.test"),
+            patch("app.deepgram.agent.v1.connect", return_value=Connection()),
+            patch("builtins.print") as log,
+        ):
+            app.view_functions["voice_agent"].__wrapped__(Browser())
+
+        self.assertFalse(
+            any(
+                args and "Error forwarding to Deepgram" in args[0]
+                for args, _ in log.call_args_list
+            )
+        )
+
+
+class MessageForwardingTests(unittest.TestCase):
+    class Browser:
+        def __init__(self):
+            self.messages = []
+
+        def send(self, message):
+            self.messages.append(message)
+
+    def test_real_sdk_messages_are_forwarded_as_json(self):
+        browser = self.Browser()
+
+        self.assertTrue(_forward_to_browser(browser, AgentV1Welcome(request_id="request-123")))
+        self.assertEqual(
+            [{"type": "Welcome", "request_id": "request-123"}],
+            [json.loads(message) for message in browser.messages],
+        )
+
+    def test_browser_disconnect_stops_forwarding_without_raising(self):
+        class DisconnectedBrowser:
+            def send(self, _):
+                raise ConnectionClosed(1000, "closed")
+
+        self.assertFalse(_forward_to_browser(DisconnectedBrowser(), {"type": "Welcome"}))
+
+
+class ConnectionRequestIdTests(unittest.TestCase):
+    def test_missing_private_transport_only_omits_request_id(self):
+        self.assertIsNone(_connection_request_id(object()))
+
+    def test_reads_request_id_when_sdk_transport_exposes_it(self):
+        response = type("Response", (), {"headers": {"dg-request-id": "request-123"}})()
+        websocket = type("WebSocket", (), {"response": response})()
+        connection = type(
+            "Connection",
+            (),
+            {"_websocket": websocket},
+        )()
+
+        self.assertEqual(_connection_request_id(connection), "request-123")
+
+
+if __name__ == "__main__":
+    unittest.main()
